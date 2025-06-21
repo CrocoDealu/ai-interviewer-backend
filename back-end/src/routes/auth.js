@@ -7,10 +7,8 @@ import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// In-memory user storage (replace with database in production)
 const users = new Map();
 
-// Generate JWT token
 const generateToken = (user) => {
   return jwt.sign(
     { 
@@ -23,12 +21,10 @@ const generateToken = (user) => {
   );
 };
 
-// POST /api/auth/signup
 router.post('/signup', validateSignup, async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
-    // Check if user already exists
     const existingUser = Array.from(users.values()).find(user => user.email === email);
     if (existingUser) {
       return res.status(400).json({
@@ -37,11 +33,9 @@ router.post('/signup', validateSignup, async (req, res) => {
       });
     }
 
-    // Hash password
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Create user
     const user = {
       id: uuidv4(),
       name: name.trim(),

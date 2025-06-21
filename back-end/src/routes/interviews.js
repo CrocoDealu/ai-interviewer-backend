@@ -2,21 +2,18 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, optionalAuth } from '../middleware/auth.js';
 import { validateInterviewSetup, validateMessage } from '../middleware/validation.js';
-import { deepSeekService } from '../services/deepseekService.js';
-
+// import { deepSeekService } from '../services/deepseekService.js';
+import { deepSeekService } from '../services/ollamaService.js';
 const router = express.Router();
 
-// In-memory interview storage (replace with database in production)
 const interviews = new Map();
 const userInterviews = new Map(); // userId -> [interviewIds]
 
-// POST /api/interviews/start
 router.post('/start', optionalAuth, validateInterviewSetup, async (req, res) => {
   try {
     const { industry, difficulty, personality, role, company } = req.body;
     const userId = req.user?.id;
 
-    // Create interview session
     const interview = {
       id: uuidv4(),
       userId,
@@ -36,7 +33,6 @@ router.post('/start', optionalAuth, validateInterviewSetup, async (req, res) => 
 
     interviews.set(interview.id, interview);
 
-    // Track user interviews if authenticated
     if (userId) {
       if (!userInterviews.has(userId)) {
         userInterviews.set(userId, []);
@@ -44,7 +40,6 @@ router.post('/start', optionalAuth, validateInterviewSetup, async (req, res) => 
       userInterviews.get(userId).push(interview.id);
     }
 
-    // Generate initial AI message
     try {
       const initialPrompt = "Please introduce yourself and start the interview.";
       const aiResponse = await deepSeekService.sendMessage(
@@ -62,7 +57,6 @@ router.post('/start', optionalAuth, validateInterviewSetup, async (req, res) => 
       interview.messages.push(aiMessage);
     } catch (error) {
       console.error('Error generating initial AI message:', error);
-      // Continue without initial message if AI fails
     }
 
     res.status(201).json({
@@ -84,7 +78,6 @@ router.post('/start', optionalAuth, validateInterviewSetup, async (req, res) => 
   }
 });
 
-// GET /api/interviews/:id
 router.get('/:id', optionalAuth, (req, res) => {
   try {
     const { id } = req.params;
@@ -97,7 +90,6 @@ router.get('/:id', optionalAuth, (req, res) => {
       });
     }
 
-    // Check if user has access to this interview
     if (interview.userId && (!req.user || req.user.id !== interview.userId)) {
       return res.status(403).json({
         error: 'Access denied',
