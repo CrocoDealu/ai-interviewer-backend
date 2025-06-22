@@ -4,7 +4,6 @@ import re
 from collections import Counter
 import logging
 
-# Download required NLTK data
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
