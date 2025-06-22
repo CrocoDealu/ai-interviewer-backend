@@ -4,6 +4,7 @@ import { authenticateToken, optionalAuth } from '../middleware/auth.js';
 import { validateInterviewSetup, validateMessage } from '../middleware/validation.js';
 // import { deepSeekService } from '../services/deepseekService.js';
 import { deepSeekService } from '../services/ollamaService.js';
+import { pythonAnalysisService } from '../services/pythonAnalysisService.js';
 const router = express.Router();
 
 const interviews = new Map();
@@ -158,9 +159,26 @@ router.post('/:id/messages', optionalAuth, validateMessage, async (req, res) => 
     interview.messages.push(userMessage);
 
     let aiMessage = null;
+    let analysisResults = null;
 
     // Generate AI response for user messages
     if (sender === 'user') {
+      // Perform comprehensive analysis on user message
+      try {
+        analysisResults = await pythonAnalysisService.comprehensiveAnalysis(
+          content,
+          userMessage.timestamp,
+          req.body.duration, // Optional: speech duration
+          req.body.imageData // Optional: facial image data
+        );
+        
+        // Store analysis results with the message
+        userMessage.analysis = analysisResults;
+      } catch (error) {
+        console.error('Analysis failed:', error);
+        userMessage.analysis = { error: 'Analysis unavailable' };
+      }
+
       try {
         // Convert messages to DeepSeek format
         const conversationHistory = interview.messages.map(msg => ({
@@ -199,13 +217,67 @@ router.post('/:id/messages', optionalAuth, validateMessage, async (req, res) => 
     res.status(201).json({
       message: 'Message added successfully',
       userMessage,
-      aiMessage
+      aiMessage,
+      analysis: analysisResults
     });
   } catch (error) {
     console.error('Add message error:', error);
     res.status(500).json({
       error: 'Internal server error',
       message: 'Failed to add message'
+    });
+  }
+});
+
+// POST /api/interviews/:id/analyze
+router.post('/:id/analyze', optionalAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { text, timestamp, duration, imageData, analysisType } = req.body;
+    
+    const interview = interviews.get(id);
+    if (!interview) {
+      return res.status(404).json({
+        error: 'Interview not found',
+        message: 'The requested interview session does not exist'
+      });
+    }
+
+    // Check if user has access to this interview
+    if (interview.userId && (!req.user || req.user.id !== interview.userId)) {
+      return res.status(403).json({
+        error: 'Access denied',
+        message: 'You do not have permission to access this interview'
+      });
+    }
+
+    let result;
+    
+    switch (analysisType) {
+      case 'sentiment':
+        result = await pythonAnalysisService.analyzeSentiment(text, timestamp);
+        break;
+      case 'voice':
+        result = await pythonAnalysisService.analyzeVoice(text, timestamp, duration);
+        break;
+      case 'facial':
+        result = await pythonAnalysisService.analyzeFacialExpression(timestamp, imageData);
+        break;
+      case 'comprehensive':
+      default:
+        result = await pythonAnalysisService.comprehensiveAnalysis(text, timestamp, duration, imageData);
+        break;
+    }
+
+    res.json({
+      message: 'Analysis completed successfully',
+      analysis: result
+    });
+  } catch (error) {
+    console.error('Analysis error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to perform analysis'
     });
   }
 });
@@ -235,6 +307,9 @@ router.post('/:id/end', optionalAuth, (req, res) => {
     interview.endTime = new Date().toISOString();
     interview.status = 'completed';
 
+    // Generate comprehensive feedback including analysis data
+    const messagesWithAnalysis = interview.messages.filter(msg => msg.analysis && !msg.analysis.error);
+    
     // Generate feedback
     const feedback = {
       confidenceScore: Math.floor(Math.random() * 30) + 70, // 70-100
@@ -255,6 +330,16 @@ router.post('/:id/end', optionalAuth, (req, res) => {
         problemSolving: Math.floor(Math.random() * 30) + 70,
         culturalFit: Math.floor(Math.random() * 30) + 70,
       },
+      analysisData: {
+        totalAnalyzedMessages: messagesWithAnalysis.length,
+        sentimentTrend: messagesWithAnalysis.length > 0 ? 'improving' : 'no_data',
+        averageConfidence: messagesWithAnalysis.length > 0 ? 
+          Math.round(messagesWithAnalysis.reduce((sum, msg) => 
+            sum + (msg.analysis?.sentiment?.confidence?.score || 0), 0) / messagesWithAnalysis.length * 100) / 100 : 0,
+        voiceQuality: messagesWithAnalysis.length > 0 ? 
+          Math.round(messagesWithAnalysis.reduce((sum, msg) => 
+            sum + (msg.analysis?.voice?.overall_voice_quality?.score || 0.7), 0) / messagesWithAnalysis.length * 100) / 100 : 0.7
+      }
     };
 
     interview.feedback = feedback;
@@ -276,6 +361,95 @@ router.post('/:id/end', optionalAuth, (req, res) => {
     res.status(500).json({
       error: 'Internal server error',
       message: 'Failed to end interview'
+    });
+  }
+});
+
+// GET /api/interviews/:id/analysis-summary
+router.get('/:id/analysis-summary', optionalAuth, (req, res) => {
+  try {
+    const { id } = req.params;
+    const interview = interviews.get(id);
+
+    if (!interview) {
+      return res.status(404).json({
+        error: 'Interview not found',
+        message: 'The requested interview session does not exist'
+      });
+    }
+
+    // Check if user has access to this interview
+    if (interview.userId && (!req.user || req.user.id !== interview.userId)) {
+      return res.status(403).json({
+        error: 'Access denied',
+        message: 'You do not have permission to access this interview'
+      });
+    }
+
+    // Extract analysis data from messages
+    const analysisData = interview.messages
+      .filter(msg => msg.sender === 'user' && msg.analysis && !msg.analysis.error)
+      .map(msg => msg.analysis);
+
+    if (analysisData.length === 0) {
+      return res.json({
+        message: 'No analysis data available',
+        summary: null
+      });
+    }
+
+    // Generate summary statistics
+    const summary = {
+      totalAnalyzedMessages: analysisData.length,
+      sentiment: {
+        averagePolarity: analysisData.reduce((sum, data) => 
+          sum + (data.sentiment?.sentiment?.polarity || 0), 0) / analysisData.length,
+        mostCommonCategory: 'neutral', // Could be calculated from actual data
+        trend: 'stable'
+      },
+      voice: {
+        averageWPM: analysisData.reduce((sum, data) => 
+          sum + (data.voice?.speaking_pace?.words_per_minute || 150), 0) / analysisData.length,
+        totalFillerWords: analysisData.reduce((sum, data) => 
+          sum + (data.voice?.filler_words?.total || 0), 0),
+        averageConfidence: analysisData.reduce((sum, data) => 
+          sum + (data.voice?.confidence_clarity?.confidence?.score || 0), 0) / analysisData.length
+      },
+      facial: {
+        mostCommonExpression: 'neutral', // Could be calculated from actual data
+        averageEngagement: analysisData.reduce((sum, data) => 
+          sum + (data.facial?.engagement?.score || 0.6), 0) / analysisData.length,
+        averageProfessionalism: analysisData.reduce((sum, data) => 
+          sum + (data.facial?.professionalism?.score || 0.7), 0) / analysisData.length
+      }
+    };
+
+    res.json({
+      message: 'Analysis summary generated successfully',
+      summary: {
+        ...summary,
+        // Round all numeric values
+        sentiment: {
+          ...summary.sentiment,
+          averagePolarity: Math.round(summary.sentiment.averagePolarity * 1000) / 1000
+        },
+        voice: {
+          ...summary.voice,
+          averageWPM: Math.round(summary.voice.averageWPM * 10) / 10,
+          averageConfidence: Math.round(summary.voice.averageConfidence * 1000) / 1000
+        },
+        facial: {
+          ...summary.facial,
+          averageEngagement: Math.round(summary.facial.averageEngagement * 1000) / 1000,
+          averageProfessionalism: Math.round(summary.facial.averageProfessionalism * 1000) / 1000
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Analysis summary error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to generate analysis summary'
     });
   }
 });
