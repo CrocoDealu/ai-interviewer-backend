@@ -10,3 +10,4 @@
      return this.http.put(
        `${this.apiUrl}/move/${username}`,
        {},
+     )
